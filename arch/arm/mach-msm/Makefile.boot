@@ -69,8 +69,8 @@ endif
         #dtb-$(CONFIG_ARCH_MSM8974)	+= msm8974-v2.2-mtp.dtb
         dtb-$(CONFIG_ARCH_MSM8974_ORIG)	+= msm8974-v2.0-1-mtp.dtb
         dtb-$(CONFIG_ARCH_MSM8974_ORIG)	+= msm8974-v2.2-mtp.dtb
-        dtb-$(CONFIG_BOARD_ZTEMT_NUBIA)	+= msm8974-v2.0-1-mtp-ztemt-$(TARGET_PRODUCT).dtb
-        dtb-$(CONFIG_BOARD_ZTEMT_NUBIA)	+= msm8974-v2.2-mtp-ztemt-$(TARGET_PRODUCT).dtb
+        dtb-$(CONFIG_BOARD_ZTEMT_NUBIA)	+= msm8974-v2.0-1-mtp-ztemt-NX503A.dtb
+        dtb-$(CONFIG_BOARD_ZTEMT_NUBIA)	+= msm8974-v2.2-mtp-ztemt-NX503A.dtb
 # APQ8084
    zreladdr-$(CONFIG_ARCH_APQ8084)	:= 0x00008000
         dtb-$(CONFIG_ARCH_APQ8084)	+= apq8084-sim.dtb
