@@ -536,6 +536,7 @@ fail_cmd2:
 	mutex_unlock(&audio_ocmem_lcl.state_process_lock);
 fail_cmd:
 	pr_debug("%s: exit\n", __func__);
+	audio_ocmem_lcl.buf = NULL;
 	audio_ocmem_lcl.audio_ocmem_running = false;
 	return ret;
 }
@@ -834,6 +835,7 @@ static void process_ocmem_dump(void)
 	ret = ocmem_free(OCMEM_LP_AUDIO, audio_ocmem_lcl.buf);
 	if (ret)
 		pr_err("%s: ocmem_free failed\n", __func__);
+	audio_ocmem_lcl.buf = NULL;
 }
 
 static int lpass_notifier_cb(struct notifier_block *this, unsigned long code,
@@ -879,6 +881,15 @@ static int ocmem_audio_client_probe(struct platform_device *pdev)
 
 	pr_debug("%s\n", __func__);
 
+	audio_ocmem_lcl.audio_hdl = ocmem_notifier_register(OCMEM_LP_AUDIO,
+						&audio_ocmem_client_nb);
+	if (PTR_RET(audio_ocmem_lcl.audio_hdl) == -EPROBE_DEFER)
+		return -EPROBE_DEFER;
+	else if (!audio_ocmem_lcl.audio_hdl) {
+		pr_err("%s: Failed to get ocmem handle %d\n", __func__,
+						OCMEM_LP_AUDIO);
+		return -ENODEV;
+	}
 	subsys_notif_register_notifier("adsp", &anb);
 
 	audio_ocmem_lcl.ocmem_dump_addr =
@@ -911,7 +922,7 @@ static int ocmem_audio_client_probe(struct platform_device *pdev)
 		alloc_workqueue("ocmem_audio_client_driver_voice",
 					WQ_NON_REENTRANT, 0);
 	if (!audio_ocmem_lcl.voice_ocmem_workqueue) {
-		pr_err("%s: Failed to create ocmem voice work queue\n",
+		pr_info("%s: Failed to create ocmem voice work queue\n",
 			__func__);
 		ret = -ENOMEM;
 		goto destroy_audio_wq;
@@ -943,12 +954,6 @@ static int ocmem_audio_client_probe(struct platform_device *pdev)
 		__func__);
 		ret = -EFAULT;
 		goto destroy_voice_wq;
-	}
-	audio_ocmem_lcl.audio_hdl = ocmem_notifier_register(OCMEM_LP_AUDIO,
-						&audio_ocmem_client_nb);
-	if (audio_ocmem_lcl.audio_hdl == NULL) {
-		pr_err("%s: Failed to get ocmem handle %d\n", __func__,
-						OCMEM_LP_AUDIO);
 	}
 	audio_ocmem_lcl.lp_memseg_ptr = NULL;
 	return 0;

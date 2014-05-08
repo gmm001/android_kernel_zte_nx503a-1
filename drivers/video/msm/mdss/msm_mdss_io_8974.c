@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -247,9 +247,11 @@ int mdss_dsi_clk_div_config(struct mdss_panel_info *panel_info,
 	return 0;
 }
 
-int mdss_dsi_enable_bus_clocks(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
+int mdss_dsi_bus_clk_start(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 {
 	int rc = 0;
+
+	pr_debug("%s: ndx=%d\n", __func__, ctrl_pdata->ndx);
 
 	rc = clk_prepare_enable(ctrl_pdata->mdp_core_clk);
 	if (rc) {
@@ -277,14 +279,14 @@ error:
 	return rc;
 }
 
-void mdss_dsi_disable_bus_clocks(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
+void mdss_dsi_bus_clk_stop(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 {
 	clk_disable_unprepare(ctrl_pdata->axi_clk);
 	clk_disable_unprepare(ctrl_pdata->ahb_clk);
 	clk_disable_unprepare(ctrl_pdata->mdp_core_clk);
 }
 
-static int mdss_dsi_clk_prepare(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
+static int mdss_dsi_link_clk_prepare(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 {
 	int rc = 0;
 
@@ -316,7 +318,7 @@ esc_clk_err:
 	return rc;
 }
 
-static void mdss_dsi_clk_unprepare(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
+static void mdss_dsi_link_clk_unprepare(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 {
 	if (!ctrl_pdata) {
 		pr_err("%s: Invalid input data\n", __func__);
@@ -328,7 +330,7 @@ static void mdss_dsi_clk_unprepare(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 	clk_unprepare(ctrl_pdata->esc_clk);
 }
 
-static int mdss_dsi_clk_set_rate(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
+static int mdss_dsi_link_clk_set_rate(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 {
 	u32 esc_clk_rate = 19200000;
 	int rc = 0;
@@ -369,7 +371,7 @@ error:
 	return rc;
 }
 
-static int mdss_dsi_clk_enable(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
+static int mdss_dsi_link_clk_enable(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 {
 	int rc = 0;
 
@@ -377,6 +379,8 @@ static int mdss_dsi_clk_enable(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 		pr_err("%s: Invalid input data\n", __func__);
 		return -EINVAL;
 	}
+
+	pr_debug("%s: ndx=%d\n", __func__, ctrl_pdata->ndx);
 
 	if (ctrl_pdata->mdss_dsi_clk_on) {
 		pr_info("%s: mdss_dsi_clks already ON\n", __func__);
@@ -413,12 +417,14 @@ esc_clk_err:
 	return rc;
 }
 
-static void mdss_dsi_clk_disable(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
+static void mdss_dsi_link_clk_disable(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 {
 	if (!ctrl_pdata) {
 		pr_err("%s: Invalid input data\n", __func__);
 		return;
 	}
+
+	pr_debug("%s: ndx=%d\n", __func__, ctrl_pdata->ndx);
 
 	if (ctrl_pdata->mdss_dsi_clk_on == 0) {
 		pr_info("%s: mdss_dsi_clks already OFF\n", __func__);
@@ -432,62 +438,110 @@ static void mdss_dsi_clk_disable(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 	ctrl_pdata->mdss_dsi_clk_on = 0;
 }
 
-int mdss_dsi_clk_ctrl(struct mdss_dsi_ctrl_pdata *ctrl, int enable)
+int mdss_dsi_link_clk_start(struct mdss_dsi_ctrl_pdata *ctrl)
 {
 	int rc = 0;
 
-	mutex_lock(&ctrl->mutex);
+	rc = mdss_dsi_link_clk_set_rate(ctrl);
+	if (rc) {
+		pr_err("%s: failed to set clk rates. rc=%d\n",
+			__func__, rc);
+		goto error;
+	}
+
+	rc = mdss_dsi_link_clk_prepare(ctrl);
+	if (rc) {
+		pr_err("%s: failed to prepare clks. rc=%d\n",
+			__func__, rc);
+		goto error;
+	}
+
+	rc = mdss_dsi_link_clk_enable(ctrl);
+	if (rc) {
+		pr_err("%s: failed to enable clks. rc=%d\n",
+			__func__, rc);
+		mdss_dsi_link_clk_unprepare(ctrl);
+		goto error;
+	}
+
+error:
+	return rc;
+}
+
+void mdss_dsi_link_clk_stop(struct mdss_dsi_ctrl_pdata *ctrl)
+{
+	mdss_dsi_link_clk_disable(ctrl);
+	mdss_dsi_link_clk_unprepare(ctrl);
+}
+
+static void mdss_dsi_clk_ctrl_sub(struct mdss_dsi_ctrl_pdata *ctrl, int enable)
+{
+	int changed = 0;
+
 	if (enable) {
-		if (ctrl->clk_cnt == 0) {
-			rc = mdss_dsi_enable_bus_clocks(ctrl);
-			if (rc) {
-				pr_err("%s: failed to enable bus clks. rc=%d\n",
-					__func__, rc);
-				goto error;
-			}
-
-			rc = mdss_dsi_clk_set_rate(ctrl);
-			if (rc) {
-				pr_err("%s: failed to set clk rates. rc=%d\n",
-					__func__, rc);
-				mdss_dsi_disable_bus_clocks(ctrl);
-				goto error;
-			}
-
-			rc = mdss_dsi_clk_prepare(ctrl);
-			if (rc) {
-				pr_err("%s: failed to prepare clks. rc=%d\n",
-					__func__, rc);
-				mdss_dsi_disable_bus_clocks(ctrl);
-				goto error;
-			}
-
-			rc = mdss_dsi_clk_enable(ctrl);
-			if (rc) {
-				pr_err("%s: failed to enable clks. rc=%d\n",
-					__func__, rc);
-				mdss_dsi_clk_unprepare(ctrl);
-				mdss_dsi_disable_bus_clocks(ctrl);
-				goto error;
-			}
+		if (ctrl->clk_cnt_sub == 0)
+			changed++;
+		ctrl->clk_cnt_sub++;
+	} else {
+		if (ctrl->clk_cnt_sub) {
+			ctrl->clk_cnt_sub--;
+			if (ctrl->clk_cnt_sub == 0)
+				changed++;
+		} else {
+			pr_debug("%s: Can not be turned off\n", __func__);
 		}
+	}
+
+	pr_debug("%s: ndx=%d clk_cnt_sub=%d changed=%d enable=%d\n",
+		__func__, ctrl->ndx, ctrl->clk_cnt_sub, changed, enable);
+	if (changed) {
+		if (enable) {
+			if (mdss_dsi_bus_clk_start(ctrl) == 0)
+				mdss_dsi_link_clk_start(ctrl);
+		} else {
+			mdss_dsi_link_clk_stop(ctrl);
+			mdss_dsi_bus_clk_stop(ctrl);
+		}
+	}
+}
+
+static DEFINE_MUTEX(dsi_clk_lock); /* per system */
+
+void mdss_dsi_clk_ctrl(struct mdss_dsi_ctrl_pdata *ctrl, int enable)
+{
+	int changed = 0;
+	struct mdss_dsi_ctrl_pdata *sctrl = NULL;
+
+	mutex_lock(&dsi_clk_lock);
+	if (enable) {
+		if (ctrl->clk_cnt == 0)
+			changed++;
 		ctrl->clk_cnt++;
 	} else {
 		if (ctrl->clk_cnt) {
 			ctrl->clk_cnt--;
-			if (ctrl->clk_cnt == 0) {
-				mdss_dsi_clk_disable(ctrl);
-				mdss_dsi_clk_unprepare(ctrl);
-				mdss_dsi_disable_bus_clocks(ctrl);
-			}
+			if (ctrl->clk_cnt == 0)
+				changed++;
+		} else {
+			pr_debug("%s: Can not be turned off\n", __func__);
 		}
 	}
-	pr_debug("%s: ctrl ndx=%d enabled=%d clk_cnt=%d\n",
-			__func__, ctrl->ndx, enable, ctrl->clk_cnt);
 
-error:
-	mutex_unlock(&ctrl->mutex);
-	return rc;
+	pr_debug("%s: ndx=%d clk_cnt=%d changed=%d enable=%d\n",
+		__func__, ctrl->ndx, ctrl->clk_cnt, changed, enable);
+	if (ctrl->flags & DSI_FLAG_CLOCK_MASTER)
+		sctrl = mdss_dsi_ctrl_slave(ctrl);
+
+	if (changed) {
+		if (enable && sctrl)
+			mdss_dsi_clk_ctrl_sub(sctrl, enable);
+
+		mdss_dsi_clk_ctrl_sub(ctrl, enable);
+
+		if (!enable && sctrl)
+			mdss_dsi_clk_ctrl_sub(sctrl, enable);
+	}
+	mutex_unlock(&dsi_clk_lock);
 }
 
 void mdss_dsi_phy_sw_reset(unsigned char *ctrl_base)
@@ -502,44 +556,37 @@ void mdss_dsi_phy_sw_reset(unsigned char *ctrl_base)
 	wmb();
 }
 
-void mdss_dsi_phy_enable(unsigned char *ctrl_base, int on)
+void mdss_dsi_phy_disable(struct mdss_dsi_ctrl_pdata *ctrl)
 {
-	if (on) {
-		MIPI_OUTP(ctrl_base + 0x03cc, 0x03);
-		wmb();
-		usleep(100);
-		MIPI_OUTP(ctrl_base + 0x0220, 0x006);
-		wmb();
-		usleep(100);
-		MIPI_OUTP(ctrl_base + 0x0268, 0x001);
-		wmb();
-		usleep(100);
-		MIPI_OUTP(ctrl_base + 0x0268, 0x000);
-		wmb();
-		usleep(100);
-		MIPI_OUTP(ctrl_base + 0x0220, 0x007);
-		wmb();
-		MIPI_OUTP(ctrl_base + 0x03cc, 0x01);
-		wmb();
-		usleep(100);
+	static struct mdss_dsi_ctrl_pdata *left_ctrl;
 
-		/* MMSS_DSI_0_PHY_DSIPHY_CTRL_0 */
-		MIPI_OUTP(ctrl_base + 0x0470, 0x07e);
-		MIPI_OUTP(ctrl_base + 0x0470, 0x06e);
-		MIPI_OUTP(ctrl_base + 0x0470, 0x06c);
-		MIPI_OUTP(ctrl_base + 0x0470, 0x064);
-		MIPI_OUTP(ctrl_base + 0x0470, 0x065);
-		MIPI_OUTP(ctrl_base + 0x0470, 0x075);
-		MIPI_OUTP(ctrl_base + 0x0470, 0x077);
-		MIPI_OUTP(ctrl_base + 0x0470, 0x07f);
-		wmb();
-
-	} else {
-		MIPI_OUTP(ctrl_base + 0x0220, 0x006);
-		MIPI_OUTP(ctrl_base + 0x0470, 0x000);
-		MIPI_OUTP(ctrl_base + 0x0598, 0x000);
-		wmb();
+	if (ctrl == NULL) {
+		pr_err("%s: Invalid input data\n", __func__);
+		return;
 	}
+
+	if (left_ctrl &&
+			(ctrl->panel_data.panel_info.pdest == DISPLAY_1))
+		return;
+
+	if (left_ctrl &&
+			(ctrl->panel_data.panel_info.pdest
+			 ==
+			 DISPLAY_2)) {
+		MIPI_OUTP(left_ctrl->ctrl_base + 0x0470,
+				0x000);
+		MIPI_OUTP(left_ctrl->ctrl_base + 0x0598,
+				0x000);
+	}
+
+	MIPI_OUTP(ctrl->ctrl_base + 0x0470, 0x000);
+	MIPI_OUTP(ctrl->ctrl_base + 0x0598, 0x000);
+
+	/*
+	 * Wait for the registers writes to complete in order to
+	 * ensure that the phy is completely disabled
+	 */
+	wmb();
 }
 
 void mdss_dsi_phy_init(struct mdss_panel_data *pdata)
@@ -555,7 +602,7 @@ void mdss_dsi_phy_init(struct mdss_panel_data *pdata)
 		return;
 	}
 
-	pd = ((ctrl_pdata->panel_data).panel_info.mipi).dsi_phy_db;
+	pd = &(((ctrl_pdata->panel_data).panel_info.mipi).dsi_phy_db);
 
 	/* Strength ctrl 0 */
 	MIPI_OUTP((ctrl_pdata->ctrl_base) + 0x0484, pd->strength[0]);
@@ -615,7 +662,7 @@ void mdss_dsi_phy_init(struct mdss_panel_data *pdata)
 		for (i = 0; i < 9; i++) {
 			offset = i + (ln * 9);
 			MIPI_OUTP((ctrl_pdata->ctrl_base) + off,
-							pd->laneCfg[offset]);
+							pd->lanecfg[offset]);
 			wmb();
 			off += 4;
 		}
@@ -634,7 +681,7 @@ void mdss_dsi_phy_init(struct mdss_panel_data *pdata)
 
 	off = 0x04b4;	/* phy BIST ctrl 0 - 5 */
 	for (i = 0; i < 6; i++) {
-		MIPI_OUTP((ctrl_pdata->ctrl_base) + off, pd->bistCtrl[i]);
+		MIPI_OUTP((ctrl_pdata->ctrl_base) + off, pd->bistctrl[i]);
 		wmb();
 		off += 4;
 	}
@@ -651,6 +698,8 @@ void mdss_edp_clk_deinit(struct mdss_edp_drv_pdata *edp_drv)
 		clk_put(edp_drv->ahb_clk);
 	if (edp_drv->link_clk)
 		clk_put(edp_drv->link_clk);
+	if (edp_drv->mdp_core_clk)
+		clk_put(edp_drv->mdp_core_clk);
 }
 
 int mdss_edp_clk_init(struct mdss_edp_drv_pdata *edp_drv)
@@ -685,6 +734,14 @@ int mdss_edp_clk_init(struct mdss_edp_drv_pdata *edp_drv)
 		goto mdss_edp_clk_err;
 	}
 
+	/* need mdss clock to receive irq */
+	edp_drv->mdp_core_clk = clk_get(dev, "mdp_core_clk");
+	if (IS_ERR(edp_drv->mdp_core_clk)) {
+		pr_err("%s: Can't find mdp_core_clk", __func__);
+		edp_drv->mdp_core_clk = NULL;
+		goto mdss_edp_clk_err;
+	}
+
 	return 0;
 
 mdss_edp_clk_err:
@@ -712,7 +769,16 @@ int mdss_edp_aux_clk_enable(struct mdss_edp_drv_pdata *edp_drv)
 		goto c1;
 	}
 
+	/* need mdss clock to receive irq */
+	ret = clk_enable(edp_drv->mdp_core_clk);
+	if (ret) {
+		pr_err("%s: Failed to enable mdp_core_clk\n", __func__);
+		goto c0;
+	}
+
 	return 0;
+c0:
+	clk_disable(edp_drv->ahb_clk);
 c1:
 	clk_disable(edp_drv->aux_clk);
 c2:
@@ -724,6 +790,7 @@ void mdss_edp_aux_clk_disable(struct mdss_edp_drv_pdata *edp_drv)
 {
 	clk_disable(edp_drv->aux_clk);
 	clk_disable(edp_drv->ahb_clk);
+	clk_disable(edp_drv->mdp_core_clk);
 }
 
 int mdss_edp_clk_enable(struct mdss_edp_drv_pdata *edp_drv)
@@ -767,11 +834,18 @@ int mdss_edp_clk_enable(struct mdss_edp_drv_pdata *edp_drv)
 		pr_err("%s: Failed to enable link clk\n", __func__);
 		goto c1;
 	}
+	ret = clk_enable(edp_drv->mdp_core_clk);
+	if (ret) {
+		pr_err("%s: Failed to enable mdp_core_clk\n", __func__);
+		goto c0;
+	}
 
 	edp_drv->clk_on = 1;
 
 	return 0;
 
+c0:
+	clk_disable(edp_drv->link_clk);
 c1:
 	clk_disable(edp_drv->ahb_clk);
 c2:
@@ -793,6 +867,7 @@ void mdss_edp_clk_disable(struct mdss_edp_drv_pdata *edp_drv)
 	clk_disable(edp_drv->pixel_clk);
 	clk_disable(edp_drv->ahb_clk);
 	clk_disable(edp_drv->link_clk);
+	clk_disable(edp_drv->mdp_core_clk);
 
 	edp_drv->clk_on = 0;
 }
@@ -801,10 +876,11 @@ int mdss_edp_prepare_aux_clocks(struct mdss_edp_drv_pdata *edp_drv)
 {
 	int ret;
 
+	/* ahb clock should be prepared first */
 	ret = clk_prepare(edp_drv->ahb_clk);
 	if (ret) {
 		pr_err("%s: Failed to prepare ahb clk\n", __func__);
-		goto c1;
+		goto c3;
 	}
 	ret = clk_prepare(edp_drv->aux_clk);
 	if (ret) {
@@ -812,16 +888,26 @@ int mdss_edp_prepare_aux_clocks(struct mdss_edp_drv_pdata *edp_drv)
 		goto c2;
 	}
 
+	/* need mdss clock to receive irq */
+	ret = clk_prepare(edp_drv->mdp_core_clk);
+	if (ret) {
+		pr_err("%s: Failed to prepare mdp_core clk\n", __func__);
+		goto c1;
+	}
+
 	return 0;
 c1:
-	clk_unprepare(edp_drv->ahb_clk);
+	clk_unprepare(edp_drv->aux_clk);
 c2:
+	clk_unprepare(edp_drv->ahb_clk);
+c3:
 	return ret;
 
 }
 
 void mdss_edp_unprepare_aux_clocks(struct mdss_edp_drv_pdata *edp_drv)
 {
+	clk_unprepare(edp_drv->mdp_core_clk);
 	clk_unprepare(edp_drv->aux_clk);
 	clk_unprepare(edp_drv->ahb_clk);
 }
@@ -830,7 +916,7 @@ int mdss_edp_prepare_clocks(struct mdss_edp_drv_pdata *edp_drv)
 {
 	int ret;
 
-	/* ahb clock should be first one to enable */
+	/* ahb clock should be prepared first */
 	ret = clk_prepare(edp_drv->ahb_clk);
 	if (ret) {
 		pr_err("%s: Failed to prepare ahb clk\n", __func__);
@@ -851,8 +937,15 @@ int mdss_edp_prepare_clocks(struct mdss_edp_drv_pdata *edp_drv)
 		pr_err("%s: Failed to prepare link clk\n", __func__);
 		goto c1;
 	}
+	ret = clk_prepare(edp_drv->mdp_core_clk);
+	if (ret) {
+		pr_err("%s: Failed to prepare mdp_core clk\n", __func__);
+		goto c0;
+	}
 
 	return 0;
+c0:
+	clk_unprepare(edp_drv->link_clk);
 c1:
 	clk_unprepare(edp_drv->pixel_clk);
 c2:
@@ -865,6 +958,7 @@ c4:
 
 void mdss_edp_unprepare_clocks(struct mdss_edp_drv_pdata *edp_drv)
 {
+	clk_unprepare(edp_drv->mdp_core_clk);
 	clk_unprepare(edp_drv->aux_clk);
 	clk_unprepare(edp_drv->pixel_clk);
 	clk_unprepare(edp_drv->link_clk);

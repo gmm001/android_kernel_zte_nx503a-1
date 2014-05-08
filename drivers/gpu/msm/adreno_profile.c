@@ -441,6 +441,11 @@ static void transfer_results(struct kgsl_device *device,
 					profile, *(ptr + buf_off++));
 			if (assigns_list == NULL) {
 				*log_ptr = (unsigned int) -1;
+
+				shared_buf_inc(profile->shared_size,
+					&profile->shared_tail,
+					SIZE_SHARED_ENTRY(cnt));
+
 				goto err;
 			} else {
 				*log_ptr = assigns_list->groupid << 16 |
@@ -597,7 +602,7 @@ static void _add_assignment(struct adreno_device *adreno_dev,
 static char *_parse_next_assignment(struct adreno_device *adreno_dev,
 		char *str, int *groupid, int *countable, bool *remove)
 {
-	char *groupid_str, *countable_str;
+	char *groupid_str, *countable_str, *next_str = NULL;
 	int ret;
 
 	*groupid = -EINVAL;
@@ -635,8 +640,15 @@ static char *_parse_next_assignment(struct adreno_device *adreno_dev,
 	if (countable_str == str)
 		return NULL;
 
-	*str = '\0';
-	str++;
+	/*
+	 * If we have reached the end of the original string then make sure we
+	 * return NULL from this function or we could accidently overrun
+	 */
+
+	if (*str != '\0') {
+		*str = '\0';
+		next_str = str + 1;
+	}
 
 	/* set results */
 	*groupid = adreno_perfcounter_get_groupid(adreno_dev,
@@ -647,7 +659,7 @@ static char *_parse_next_assignment(struct adreno_device *adreno_dev,
 	if (ret)
 		return NULL;
 
-	return str;
+	return next_str;
 }
 
 static ssize_t profile_assignments_write(struct file *filep,
@@ -659,7 +671,7 @@ static ssize_t profile_assignments_write(struct file *filep,
 	size_t size = 0;
 	char *buf, *pbuf;
 	bool remove_assignment = false;
-	int groupid, countable;
+	int groupid, countable, ret;
 
 	if (len >= PAGE_SIZE || len == 0)
 		return -EINVAL;
@@ -674,7 +686,9 @@ static ssize_t profile_assignments_write(struct file *filep,
 		goto error_unlock;
 	}
 
-	kgsl_active_count_get(device);
+	ret = kgsl_active_count_get(device);
+	if (ret)
+		return -EINVAL;
 
 	/*
 	 * When adding/removing assignments, ensure that the GPU is done with
@@ -1060,9 +1074,6 @@ int adreno_profile_process_results(struct kgsl_device *device)
 	 */
 	transfer_results(device, shared_buf_tail);
 
-	/* check for any cleanup */
-	check_close_profile(profile);
-
 	return 1;
 }
 
@@ -1092,7 +1103,7 @@ void adreno_profile_preib_processing(struct kgsl_device *device,
 	if (SIZE_SHARED_ENTRY(count) >= shared_buf_available(profile))
 		goto done;
 
-	if (entry_head + SIZE_SHARED_ENTRY(count) > profile->shared_size) {
+	if (entry_head + SIZE_SHARED_ENTRY(count) >= profile->shared_size) {
 		/* entry_head would wrap, start entry_head at 0 in buffer */
 		entry_head = 0;
 		profile->shared_size = profile->shared_head;
@@ -1116,7 +1127,7 @@ void adreno_profile_preib_processing(struct kgsl_device *device,
 
 	/* create the shared ibdesc */
 	_build_pre_ib_cmds(profile, rbcmds, entry_head,
-			rb->timestamp[KGSL_MEMSTORE_GLOBAL] + 1, context_id);
+			rb->global_ts + 1, context_id);
 
 	/* set flag to sync with post ib commands */
 	*cmd_flags |= KGSL_CMD_FLAGS_PROFILE;

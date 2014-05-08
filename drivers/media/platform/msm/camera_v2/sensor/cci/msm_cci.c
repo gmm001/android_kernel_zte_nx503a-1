@@ -631,7 +631,11 @@ ERROR:
 static int msm_cci_subdev_g_chip_ident(struct v4l2_subdev *sd,
 			struct v4l2_dbg_chip_ident *chip)
 {
-	BUG_ON(!chip);
+	if (!chip) {
+		pr_err("%s:%d: NULL pointer supplied for chip ident\n",
+			 __func__, __LINE__);
+		return -EINVAL;
+	}
 	chip->ident = V4L2_IDENT_CCI;
 	chip->revision = 0;
 	return 0;
@@ -770,9 +774,6 @@ static int32_t msm_cci_release(struct v4l2_subdev *sd)
 	return 0;
 }
 
-#ifdef CONFIG_ZTEMT_CAMERA_OIS
-extern void	SetH1cMod( unsigned char	UcSetNum );
-#endif
 static int32_t msm_cci_config(struct v4l2_subdev *sd,
 	struct msm_camera_cci_ctrl *cci_ctrl)
 {
@@ -791,22 +792,6 @@ static int32_t msm_cci_config(struct v4l2_subdev *sd,
 		break;
 	case MSM_CCI_I2C_WRITE:
 		rc = msm_cci_i2c_write(sd, cci_ctrl);
-		
-		#ifdef CONFIG_ZTEMT_CAMERA_OIS
-		if ((cci_ctrl->cfg.cci_i2c_write_cfg.reg_setting->reg_addr == 0x0016)&&(cci_ctrl->cfg.cci_i2c_write_cfg.reg_setting->reg_data == 0x00))
-		{
-                     SetH1cMod(0x00);
-		}
-		if ((cci_ctrl->cfg.cci_i2c_write_cfg.reg_setting->reg_addr == 0x0016)&&(cci_ctrl->cfg.cci_i2c_write_cfg.reg_setting->reg_data == 0x01))
-		{
-                     SetH1cMod(0x00);    
-		}
-		if ((cci_ctrl->cfg.cci_i2c_write_cfg.reg_setting->reg_addr == 0x0016)&&(cci_ctrl->cfg.cci_i2c_write_cfg.reg_setting->reg_data == 0x03))
-		{
-                     SetH1cMod(0xFF);        
-		}
-		#endif
-		
 		break;
 	case MSM_CCI_GPIO_WRITE:
 		break;
@@ -900,10 +885,7 @@ static long msm_cci_subdev_ioctl(struct v4l2_subdev *sd,
 		rc = msm_cci_config(sd, arg);
 		break;
 	case MSM_SD_SHUTDOWN: {
-		struct msm_camera_cci_ctrl ctrl_cmd;
-		ctrl_cmd.cmd = MSM_CCI_RELEASE;
-		rc = msm_cci_config(sd, &ctrl_cmd);
-		break;
+		return rc;
 	}
 	default:
 		rc = -ENOIOCTLCMD;

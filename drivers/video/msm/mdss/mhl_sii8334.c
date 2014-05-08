@@ -193,6 +193,7 @@ static void switch_mode(struct mhl_tx_ctrl *mhl_ctrl,
 			enum mhl_st_type to_mode, bool hpd_off);
 static void mhl_init_reg_settings(struct mhl_tx_ctrl *mhl_ctrl,
 				  bool mhl_disc_en);
+static int mhl_gpio_config(struct mhl_tx_ctrl *mhl_ctrl, int on);
 
 int mhl_i2c_reg_read(struct i2c_client *client,
 			    uint8_t slave_addr_index, uint8_t reg_offset)
@@ -357,48 +358,42 @@ static int mhl_sii_reset_pin(struct mhl_tx_ctrl *mhl_ctrl, int on)
 static int mhl_sii_wait_for_rgnd(struct mhl_tx_ctrl *mhl_ctrl)
 {
 	int timeout;
-	/* let isr handle RGND interrupt */
+
 	pr_debug("%s:%u\n", __func__, __LINE__);
+
+	if (mhl_ctrl->mhl_mode) {
+		pr_debug("%s: already in mhl mode\n", __func__);
+		return 0;
+	}
+
 	INIT_COMPLETION(mhl_ctrl->rgnd_done);
-	timeout = wait_for_completion_interruptible_timeout
+	/*
+	 * after toggling reset line and enabling disc
+	 * tx can take a while to generate intr
+	 */
+	timeout = wait_for_completion_timeout
 		(&mhl_ctrl->rgnd_done, HZ * 3);
 	if (!timeout) {
-		/* most likely nothing plugged in USB */
-		/* USB HOST connected or already in USB mode */
+		/*
+		 * most likely nothing plugged in USB
+		 * USB HOST connected or already in USB mode
+		 */
 		pr_warn("%s:%u timedout\n", __func__, __LINE__);
 		return -ENODEV;
 	}
-	return mhl_ctrl->mhl_mode ? 0 : 1;
+
+	return 0;
 }
 
 /*  USB_HANDSHAKING FUNCTIONS */
 static int mhl_sii_device_discovery(void *data, int id,
-			     void (*usb_notify_cb)(int online))
+			     void (*usb_notify_cb)(void *, int), void *ctx)
 {
 	int rc;
 	struct mhl_tx_ctrl *mhl_ctrl = data;
 	struct i2c_client *client = mhl_ctrl->i2c_handle;
 	unsigned long flags;
-
-	if (!mhl_ctrl->irq_req_done) {
-		rc = request_threaded_irq(mhl_ctrl->i2c_handle->irq, NULL,
-					  &mhl_tx_isr,
-					  IRQF_TRIGGER_LOW | IRQF_ONESHOT,
-					  client->dev.driver->name, mhl_ctrl);
-		if (rc) {
-			pr_err("request_threaded_irq failed, status: %d\n",
-			       rc);
-			return -EINVAL;
-		} else {
-			pr_debug("request_threaded_irq succeeded\n");
-			mhl_ctrl->irq_req_done = true;
-		}
-	} else {
-		enable_irq(client->irq);
-	}
-
-	/* wait for i2c interrupt line to be activated */
-	msleep(100);
+	int discovery_retry = 5;
 
 	if (id) {
 		/* When MHL cable is disconnected we get a sii8334
@@ -414,8 +409,27 @@ static int mhl_sii_device_discovery(void *data, int id,
 		return -EINVAL;
 	}
 
-	if (!mhl_ctrl->notify_usb_online)
+	if (!mhl_ctrl->notify_usb_online) {
 		mhl_ctrl->notify_usb_online = usb_notify_cb;
+		mhl_ctrl->notify_ctx = ctx;
+	}
+again:
+	if (!mhl_ctrl->irq_req_done) {
+		rc = request_threaded_irq(mhl_ctrl->i2c_handle->irq, NULL,
+			&mhl_tx_isr, IRQF_TRIGGER_LOW | IRQF_ONESHOT,
+			client->dev.driver->name, mhl_ctrl);
+		if (rc) {
+			pr_debug("request_threaded_irq failed, status: %d\n",
+			       rc);
+			return -EINVAL;
+		} else {
+			pr_debug("request_threaded_irq succeeded\n");
+			mhl_ctrl->irq_req_done = true;
+		}
+
+		/* wait for i2c interrupt line to be activated */
+		msleep(100);
+	}
 
 	if (!mhl_ctrl->disc_enabled) {
 		spin_lock_irqsave(&mhl_ctrl->lock, flags);
@@ -429,17 +443,40 @@ static int mhl_sii_device_discovery(void *data, int id,
 		 */
 		msleep(100);
 		mhl_init_reg_settings(mhl_ctrl, true);
+		/* allow tx to enable dev disc after D3 state */
 		msleep(100);
-		rc = mhl_sii_wait_for_rgnd(mhl_ctrl);
+		if (mhl_sii_wait_for_rgnd(mhl_ctrl)) {
+			pr_err("%s: discovery timeout\n", __func__);
+
+			free_irq(mhl_ctrl->i2c_handle->irq, mhl_ctrl);
+			mhl_gpio_config(mhl_ctrl, 0);
+			mhl_ctrl->irq_req_done = false;
+
+			msleep(100);
+
+			mhl_gpio_config(mhl_ctrl, 1);
+			if (discovery_retry--) {
+				pr_debug("%s: retrying discovery\n", __func__);
+				goto again;
+			} else {
+				pr_err("%s: discovery failed, ret to USB\n",
+					__func__);
+				if (mhl_ctrl->notify_usb_online)
+					mhl_ctrl->notify_usb_online(
+						mhl_ctrl->notify_ctx, 0);
+			}
+		}
 	} else {
 		if (mhl_ctrl->cur_state == POWER_STATE_D3) {
-			rc = mhl_sii_wait_for_rgnd(mhl_ctrl);
+			mhl_sii_wait_for_rgnd(mhl_ctrl);
 		} else {
 			/* in MHL mode */
 			pr_debug("%s:%u\n", __func__, __LINE__);
-			rc = 0;
 		}
 	}
+
+	rc = mhl_ctrl->mhl_mode ? 0 : 1;
+
 	pr_debug("%s: ret result: %s\n", __func__, rc ? "usb" : " mhl");
 	return rc;
 }
@@ -787,6 +824,7 @@ static void switch_mode(struct mhl_tx_ctrl *mhl_ctrl, enum mhl_st_type to_mode,
 				 rc ? "failed" : "passed");
 		}
 		mhl_ctrl->cur_state = POWER_STATE_D3;
+		mhl_ctrl->mhl_mode = 0;
 		break;
 	default:
 		break;
@@ -927,7 +965,7 @@ static int mhl_msm_read_rgnd_int(struct mhl_tx_ctrl *mhl_ctrl)
 		mhl_ctrl->mhl_mode = 1;
 		power_supply_changed(&mhl_ctrl->mhl_psy);
 		if (mhl_ctrl->notify_usb_online)
-			mhl_ctrl->notify_usb_online(1);
+			mhl_ctrl->notify_usb_online(mhl_ctrl->notify_ctx, 1);
 	} else {
 		pr_debug("%s: non-mhl sink\n", __func__);
 		mhl_ctrl->mhl_mode = 0;
@@ -1021,8 +1059,13 @@ static int dev_detect_isr(struct mhl_tx_ctrl *mhl_ctrl)
 		mhl_msm_connection(mhl_ctrl);
 	} else if (status & BIT3) {
 		pr_debug("%s: uUSB-a type dev detct\n", __func__);
+
+		/* Short RGND */
+		MHL_SII_REG_NAME_MOD(REG_DISC_STAT2, BIT0 | BIT1, 0x00);
+		mhl_msm_disconnection(mhl_ctrl);
 		power_supply_changed(&mhl_ctrl->mhl_psy);
-		mhl_drive_hpd(mhl_ctrl, HPD_DOWN);
+		if (mhl_ctrl->notify_usb_online)
+			mhl_ctrl->notify_usb_online(mhl_ctrl->notify_ctx, 0);
 		return 0;
 	}
 
@@ -1037,7 +1080,7 @@ static int dev_detect_isr(struct mhl_tx_ctrl *mhl_ctrl)
 		mhl_msm_disconnection(mhl_ctrl);
 		power_supply_changed(&mhl_ctrl->mhl_psy);
 		if (mhl_ctrl->notify_usb_online)
-			mhl_ctrl->notify_usb_online(0);
+			mhl_ctrl->notify_usb_online(mhl_ctrl->notify_ctx, 0);
 		return 0;
 	}
 
@@ -1260,7 +1303,7 @@ int mhl_send_msc_command(struct mhl_tx_ctrl *mhl_ctrl,
 
 	INIT_COMPLETION(mhl_ctrl->msc_cmd_done);
 	MHL_SII_REG_NAME_WR(REG_CBUS_PRI_START, start_bit);
-	timeout = wait_for_completion_interruptible_timeout
+	timeout = wait_for_completion_timeout
 		(&mhl_ctrl->msc_cmd_done, msecs_to_jiffies(T_ABORT_NEXT));
 	if (!timeout) {
 		pr_err("%s: cbus_command_send timed out!\n", __func__);
@@ -1902,15 +1945,30 @@ MODULE_DEVICE_TABLE(i2c, mhl_sii_i2c_id);
 #if defined(CONFIG_PM) || defined(CONFIG_PM_SLEEP)
 static int mhl_i2c_suspend_sub(struct i2c_client *client)
 {
-	enable_irq_wake(client->irq);
-	disable_irq(client->irq);
+	struct mhl_tx_ctrl *mhl_ctrl = i2c_get_clientdata(client);
+
+	pr_debug("%s\n", __func__);
+
+	if (!mhl_ctrl)
+		return 0;
+
+	free_irq(mhl_ctrl->i2c_handle->irq, mhl_ctrl);
+	mhl_ctrl->irq_req_done = false;
+
+	if (mhl_ctrl->mhl_mode)	{
+		mhl_ctrl->mhl_mode = 0;
+		power_supply_changed(&mhl_ctrl->mhl_psy);
+		if (mhl_ctrl->notify_usb_online)
+			mhl_ctrl->notify_usb_online(mhl_ctrl->notify_ctx, 0);
+	}
+
 	return 0;
 }
 
 static int mhl_i2c_resume_sub(struct i2c_client *client)
 {
-	disable_irq_wake(client->irq);
-	enable_irq(client->irq);
+	pr_debug("%s\n", __func__);
+
 	return 0;
 }
 #endif /* defined(CONFIG_PM) || defined(CONFIG_PM_SLEEP) */

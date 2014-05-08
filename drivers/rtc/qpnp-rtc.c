@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-13, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -44,6 +44,11 @@
 
 #define TO_SECS(arr)		(arr[0] | (arr[1] << 8) | (arr[2] << 16) | \
 							(arr[3] << 24))
+
+/* Module parameter to control power-on-alarm */
+static bool poweron_alarm;
+module_param(poweron_alarm, bool, 0644);
+MODULE_PARM_DESC(poweron_alarm, "Enable/Disable power-on alarm");
 
 /* rtc driver internal structure */
 struct qpnp_rtc {
@@ -97,6 +102,7 @@ qpnp_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	int rc;
 	unsigned long secs, irq_flags;
 	u8 value[4], reg = 0, alarm_enabled = 0, ctrl_reg;
+	u8 rtc_disabled = 0, rtc_ctrl_reg;
 	struct qpnp_rtc *rtc_dd = dev_get_drvdata(dev);
 
 	rtc_tm_to_time(tm, &secs);
@@ -147,6 +153,22 @@ qpnp_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	 * write operation
 	 */
 
+	/* Disable RTC H/w before writing on RTC register*/
+	rtc_ctrl_reg = rtc_dd->rtc_ctrl_reg;
+	if (rtc_ctrl_reg & BIT_RTC_ENABLE) {
+		rtc_disabled = 1;
+		rtc_ctrl_reg &= ~BIT_RTC_ENABLE;
+		rc = qpnp_write_wrapper(rtc_dd, &rtc_ctrl_reg,
+				rtc_dd->rtc_base + REG_OFFSET_RTC_CTRL, 1);
+		if (rc) {
+			dev_err(dev,
+				"Disabling of RTC control reg failed"
+					" with error:%d\n", rc);
+			goto rtc_rw_fail;
+		}
+		rtc_dd->rtc_ctrl_reg = rtc_ctrl_reg;
+	}
+
 	/* Clear WDATA[0] */
 	reg = 0x0;
 	rc = qpnp_write_wrapper(rtc_dd, &reg,
@@ -170,6 +192,20 @@ qpnp_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	if (rc) {
 		dev_err(dev, "Write to RTC reg failed\n");
 		goto rtc_rw_fail;
+	}
+
+	/* Enable RTC H/w after writing on RTC register*/
+	if (rtc_disabled) {
+		rtc_ctrl_reg |= BIT_RTC_ENABLE;
+		rc = qpnp_write_wrapper(rtc_dd, &rtc_ctrl_reg,
+				rtc_dd->rtc_base + REG_OFFSET_RTC_CTRL, 1);
+		if (rc) {
+			dev_err(dev,
+				"Enabling of RTC control reg failed"
+					" with error:%d\n", rc);
+			goto rtc_rw_fail;
+		}
+		rtc_dd->rtc_ctrl_reg = rtc_ctrl_reg;
 	}
 
 	if (alarm_enabled) {
@@ -565,58 +601,6 @@ fail_rtc_enable:
 	return rc;
 }
 
-#ifdef CONFIG_ZTEMT_POWER_DEBUG
-static time_t rtc_suspend_sec = 0;
-static time_t rtc_resume_sec = 0;
-static unsigned long all_sleep_time = 0;
-static unsigned long all_wake_time = 0;
-
-static int print_suspend_time(struct device *dev)
-{
-	int rc, diff=0;
-	struct rtc_time tm;
-	unsigned long now;
-
-	rc = qpnp_rtc_read_time(dev,&tm);  
- 	if(rc) {
-	  printk("%s: Unable to read from RTC\n", __func__);
-	}
-
-	rtc_tm_to_time(&tm, &now);
-	rtc_suspend_sec = now;
-	diff = rtc_suspend_sec - rtc_resume_sec;
-	all_wake_time += diff;
-	printk("I have work %d seconds all_wake_time %lu seconds\n",diff,all_wake_time);
-
-	return 0;
-}
-
-static int print_resume_time(struct device *dev)
-{
-	int rc, diff=0;
-	struct rtc_time tm;
-	unsigned long now;
-
-	rc = qpnp_rtc_read_time(dev,&tm);
- 	if (rc) {
-	  printk("%s: Unable to read from RTC\n", __func__);
-	}
-
-	rtc_tm_to_time(&tm, &now);
-	rtc_resume_sec = now;
-	diff = rtc_resume_sec - rtc_suspend_sec;
-	all_sleep_time += diff;
-	printk("I have sleep %d seconds all_sleep_time %lu seconds\n",diff,all_sleep_time);
-
-	return 0;
-}
-
-static const struct dev_pm_ops qpnp_rtc_pm_ops = {
-	.suspend = print_suspend_time,
-	.resume = print_resume_time,
-};
-#endif
-
 static int __devexit qpnp_rtc_remove(struct spmi_device *spmi)
 {
 	struct qpnp_rtc *rtc_dd = dev_get_drvdata(&spmi->dev);
@@ -638,7 +622,7 @@ static void qpnp_rtc_shutdown(struct spmi_device *spmi)
 	struct qpnp_rtc *rtc_dd = dev_get_drvdata(&spmi->dev);
 	bool rtc_alarm_powerup = rtc_dd->rtc_alarm_powerup;
 
-	if (!rtc_alarm_powerup) {
+	if (!rtc_alarm_powerup && !poweron_alarm) {
 		spin_lock_irqsave(&rtc_dd->alarm_ctrl_lock, irq_flags);
 		dev_dbg(&spmi->dev, "Disabling alarm interrupts\n");
 
@@ -679,9 +663,6 @@ static struct spmi_driver qpnp_rtc_driver = {
 		.name   = "qcom,qpnp-rtc",
 		.owner  = THIS_MODULE,
 		.of_match_table = spmi_match_table,
-		#ifdef CONFIG_ZTEMT_POWER_DEBUG
-		.pm	= &qpnp_rtc_pm_ops,
-		#endif
 	},
 };
 

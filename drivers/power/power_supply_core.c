@@ -1,9 +1,9 @@
 /*
  *  Universal power supply monitor class
  *
- *  Copyright Â© 2007  Anton Vorontsov <cbou@mail.ru>
- *  Copyright Â© 2004  Szabolcs Gyurko
- *  Copyright Â© 2003  Ian Molton <spyro@f2s.com>
+ *  Copyright © 2007  Anton Vorontsov <cbou@mail.ru>
+ *  Copyright © 2004  Szabolcs Gyurko
+ *  Copyright © 2003  Ian Molton <spyro@f2s.com>
  *
  *  Modified: 2004, Oct     Szabolcs Gyurko
  *
@@ -81,19 +81,6 @@ int power_supply_set_present(struct power_supply *psy, bool enable)
 }
 EXPORT_SYMBOL_GPL(power_supply_set_present);
 
-	#ifdef CONFIG_ZTEMT_CHARGE
-int power_supply_set_charger_online(struct power_supply *psy, bool enable)
-{
-	const union power_supply_propval ret = {enable,};
-
-	if (psy->set_property)
-		return psy->set_property(psy, POWER_SUPPLY_PROP_CHARGER_ONLINE,
-								&ret);
-
-	return -ENXIO;
-}
-EXPORT_SYMBOL_GPL(power_supply_set_charger_online);
-#endif
 /**
  * power_supply_set_online - set online state of the power supply
  * @psy:	the power supply to control
@@ -110,6 +97,23 @@ int power_supply_set_online(struct power_supply *psy, bool enable)
 	return -ENXIO;
 }
 EXPORT_SYMBOL_GPL(power_supply_set_online);
+
+
+/** power_supply_set_health_state - set health state of the power supply
+ * @psy:       the power supply to control
+ * @health:    sets health property of power supply
+ */
+int power_supply_set_health_state(struct power_supply *psy, int health)
+{
+	const union power_supply_propval ret = {health,};
+
+	if (psy->set_property)
+		return psy->set_property(psy, POWER_SUPPLY_PROP_HEALTH,
+		&ret);
+	return -ENXIO;
+}
+EXPORT_SYMBOL(power_supply_set_health_state);
+
 
 /**
  * power_supply_set_scope - set scope of the power supply
@@ -170,7 +174,6 @@ static int __power_supply_changed_work(struct device *dev, void *data)
 	int i;
 
 	for (i = 0; i < psy->num_supplicants; i++)
-		/*ÕâÀï±íÊ¾*/
 		if (!strcmp(psy->supplied_to[i], pst->name)) {
 			if (pst->external_power_changed)
 				pst->external_power_changed(pst);
@@ -215,8 +218,6 @@ void power_supply_changed(struct power_supply *psy)
 	wake_lock(&psy->work_wake_lock);
 	spin_unlock_irqrestore(&psy->changed_lock, flags);
 	schedule_work(&psy->changed_work);
-
-	pr_info( ">>ZTEMT >> %s  \n", __func__);
 }
 EXPORT_SYMBOL_GPL(power_supply_changed);
 

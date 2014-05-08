@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2013, Linux Foundation. All rights reserved.
+/* Copyright (c) 2010-2014, Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -766,6 +766,8 @@ static int __devinit msm_bus_fabric_probe(struct platform_device *pdev)
 		pdata = msm_bus_of_get_fab_data(pdev);
 		if (IS_ERR(pdata) || ZERO_OR_NULL_PTR(pdata)) {
 			pr_err("Null platform data\n");
+			kfree(fabric->info.node_info);
+			kfree(fabric);
 			return PTR_ERR(pdata);
 		}
 		msm_bus_board_init(pdata);
@@ -894,9 +896,17 @@ static struct platform_driver msm_bus_fabric_driver = {
 	},
 };
 
-static int __init msm_bus_fabric_init_driver(void)
+int __init msm_bus_fabric_init_driver(void)
 {
+	static bool initialized;
+
+	if (initialized)
+		return 0;
+	else
+		initialized = true;
+
 	MSM_BUS_ERR("msm_bus_fabric_init_driver\n");
 	return platform_driver_register(&msm_bus_fabric_driver);
 }
+EXPORT_SYMBOL(msm_bus_fabric_init_driver);
 subsys_initcall(msm_bus_fabric_init_driver);

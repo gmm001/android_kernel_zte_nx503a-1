@@ -38,6 +38,7 @@
 #include <mach/msm_bus.h>
 #include <mach/msm_bus_board.h>
 
+#define CLASS_NAME	"ssc"
 #define DRV_NAME	"sensors"
 #define DRV_VERSION	"1.00"
 
@@ -876,7 +877,7 @@ static int sns_ocmem_map_send(void)
 
 	vectors = ocmem_get_vectors(SNS_OCMEM_CLIENT_ID, sns_ctl.buf);
 	if ((vectors != NULL)) {
-		memcpy(&msg.vectors, vectors, sizeof(vectors));
+		memcpy(&msg.vectors, vectors, sizeof(*vectors));
 		/* TODO: set vectors_len */
 		msg.vectors_valid = true;
 		msg.vectors_len = 0;
@@ -1079,7 +1080,7 @@ const struct file_operations sensors_adsp_fops = {
 static int sensors_adsp_probe(struct platform_device *pdev)
 {
 	int ret = 0;
-	sns_ctl.dev_class = class_create(THIS_MODULE, DRV_NAME);
+	sns_ctl.dev_class = class_create(THIS_MODULE, CLASS_NAME);
 	if (sns_ctl.dev_class == NULL) {
 		pr_err("%s: class_create fail.\n", __func__);
 		goto res_err;

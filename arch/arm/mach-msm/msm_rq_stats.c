@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2013, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2010-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -190,18 +190,6 @@ static int cpufreq_transition_handler(struct notifier_block *nb,
 	return 0;
 }
 
-static void update_related_cpus(void)
-{
-	unsigned cpu;
-
-	for_each_cpu(cpu, cpu_online_mask) {
-		struct cpu_load_data *this_cpu = &per_cpu(cpuload, cpu);
-		struct cpufreq_policy cpu_policy;
-
-		cpufreq_get_policy(&cpu_policy, cpu);
-		cpumask_copy(this_cpu->related_cpus, cpu_policy.cpus);
-	}
-}
 static int cpu_hotplug_handler(struct notifier_block *nb,
 			unsigned long val, void *data)
 {
@@ -212,7 +200,6 @@ static int cpu_hotplug_handler(struct notifier_block *nb,
 	case CPU_ONLINE:
 		if (!this_cpu->cur_freq)
 			this_cpu->cur_freq = acpuclk_get_rate(cpu);
-		update_related_cpus();
 	case CPU_ONLINE_FROZEN:
 		this_cpu->avg_load_maxfreq = 0;
 	}
@@ -389,11 +376,12 @@ static int __init msm_rq_stats_init(void)
 	int ret;
 	int i;
 	struct cpufreq_policy cpu_policy;
+
+#ifndef CONFIG_SMP
 	/* Bail out if this is not an SMP Target */
-	if (!is_smp()) {
-		rq_info.init = 0;
-		return -ENOSYS;
-	}
+	rq_info.init = 0;
+	return -ENOSYS;
+#endif
 
 	rq_wq = create_singlethread_workqueue("rq_stats");
 	BUG_ON(!rq_wq);
@@ -429,11 +417,11 @@ late_initcall(msm_rq_stats_init);
 
 static int __init msm_rq_stats_early_init(void)
 {
+#ifndef CONFIG_SMP
 	/* Bail out if this is not an SMP Target */
-	if (!is_smp()) {
-		rq_info.init = 0;
-		return -ENOSYS;
-	}
+	rq_info.init = 0;
+	return -ENOSYS;
+#endif
 
 	pm_notifier(system_suspend_handler, 0);
 	return 0;
